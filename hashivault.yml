@@ -1,0 +1,70 @@
+
+---
+- name: Configure HashiCorp Vault on Ubuntu EC2
+  hosts: local
+  connection: local
+  become: true
+
+  vars:
+    vault_config_dir: /etc/vault.d
+    vault_data_dir: /opt/vault/data
+    vault_port: 8200
+
+  tasks:
+    - name: Install Vault
+      ansible.builtin.apt:
+        name: vault
+        state: present
+        update_cache: true
+
+    - name: Create Vault data directory
+      ansible.builtin.file:
+        path: "{{ vault_data_dir }}"
+        state: directory
+        owner: vault
+        group: vault
+        mode: "0750"
+
+    - name: Configure Vault server
+      ansible.builtin.copy:
+        dest: "{{ vault_config_dir }}/vault.hcl"
+        owner: vault
+        group: vault
+        mode: "0640"
+        content: |
+          ui = true
+          disable_mlock = true
+
+          storage "file" {
+            path = "{{ vault_data_dir }}"
+          }
+
+          listener "tcp" {
+            address = "0.0.0.0:{{ vault_port }}"
+            tls_disable = true
+          }
+
+          api_addr = "http://127.0.0.1:{{ vault_port }}"
+
+    - name: Enable and restart Vault
+      ansible.builtin.systemd:
+        name: vault
+        enabled: true
+        state: restarted
+        daemon_reload: true
+
+    - name: Wait for Vault port
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: "{{ vault_port }}"
+        timeout: 60
+
+    - name: Display Vault service status
+      ansible.builtin.command: systemctl is-active vault
+      register: vault_status
+      changed_when: false
+
+    - name: Show Vault status
+      ansible.builtin.debug:
+        msg: "Vault service is {{ vault_status.stdout }} on port {{ vault_port }}"
+

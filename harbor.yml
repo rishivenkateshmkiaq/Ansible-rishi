@@ -1,0 +1,156 @@
+---
+- name: Install and configure Harbor Container Registry
+  hosts: localhost
+  connection: local
+  become: true
+  become_method: sudo
+  become_user: root
+
+  vars_prompt:
+    - name: ansible_become_password
+      prompt: "Enter your sudo password"
+      private: true
+    - name: harbor_admin_password
+      prompt: "Enter a strong Harbor admin password"
+      private: true
+      confirm: true
+
+  vars:
+    ansible_become_pass: "{{ ansible_become_password }}"
+    harbor_version: "v2.15.4"
+    harbor_archive: "/tmp/harbor-online-installer-v2.15.4.tgz"
+    harbor_dir: "/opt/harbor"
+    harbor_public_ip: "13.201.19.204"
+    harbor_http_port: 8081
+
+  tasks:
+
+    - name: Gather system facts
+      ansible.builtin.setup:
+
+    - name: Install required packages
+      ansible.builtin.apt:
+        name:
+          - docker.io
+          - docker-compose-v2
+          - ca-certificates
+          - curl
+          - tar
+        state: present
+        update_cache: true
+
+    - name: Enable and start Docker
+      ansible.builtin.systemd:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Download Harbor installer
+      ansible.builtin.get_url:
+        url: "https://github.com/goharbor/harbor/releases/download/{{ harbor_version }}/harbor-online-installer-{{ harbor_version }}.tgz"
+        dest: "{{ harbor_archive }}"
+        mode: "0644"
+        timeout: 180
+
+    - name: Extract Harbor installer
+      ansible.builtin.unarchive:
+        src: "{{ harbor_archive }}"
+        dest: /opt
+        remote_src: true
+        creates: "{{ harbor_dir }}/install.sh"
+
+    - name: Create Harbor configuration from template
+      ansible.builtin.copy:
+        src: "{{ harbor_dir }}/harbor.yml.tmpl"
+        dest: "{{ harbor_dir }}/harbor.yml"
+        remote_src: true
+        force: true
+        mode: "0600"
+
+    - name: Configure Harbor hostname
+      ansible.builtin.lineinfile:
+        path: "{{ harbor_dir }}/harbor.yml"
+        regexp: '^hostname:'
+        line: "hostname: {{ harbor_public_ip }}"
+
+    - name: Configure Harbor HTTP port
+      ansible.builtin.lineinfile:
+        path: "{{ harbor_dir }}/harbor.yml"
+        regexp: '^  port:\s*80\s*$'
+        line: "  port: {{ harbor_http_port }}"
+        insertafter: '^http:$'
+
+    - name: Disable HTTPS configuration for HTTP-only setup
+      ansible.builtin.shell: |
+        python3 - <<'PY'
+        from pathlib import Path
+
+        path = Path("{{ harbor_dir }}/harbor.yml")
+        lines = path.read_text().splitlines()
+        output = []
+        i = 0
+
+        while i < len(lines):
+            line = lines[i]
+            if line.strip() == "https:":
+                output.append("# HTTPS disabled; HTTP is configured below.")
+                output.append("")
+                i += 1
+                while i < len(lines):
+                    nxt = lines[i]
+                    if not nxt.strip():
+                        i += 1
+                        continue
+                    if nxt.startswith((" ", "\t")):
+                        i += 1
+                        continue
+                    if nxt.lstrip().startswith("#"):
+                        output.append(nxt)
+                        i += 1
+                        continue
+                    break
+                continue
+
+            output.append(line)
+            i += 1
+
+        path.write_text("\n".join(output) + "\n")
+        PY
+      args:
+        executable: /bin/bash
+
+    - name: Configure Harbor external URL
+      ansible.builtin.lineinfile:
+        path: "{{ harbor_dir }}/harbor.yml"
+        regexp: '^#?\s*external_url:'
+        line: "external_url: http://{{ harbor_public_ip }}:{{ harbor_http_port }}"
+
+    - name: Configure Harbor administrator password
+      ansible.builtin.lineinfile:
+        path: "{{ harbor_dir }}/harbor.yml"
+        regexp: '^harbor_admin_password:'
+        line: "harbor_admin_password: '{{ harbor_admin_password }}'"
+      no_log: true
+
+    - name: Validate Harbor configuration
+      ansible.builtin.command:
+        cmd: ./prepare
+        chdir: "{{ harbor_dir }}"
+      changed_when: true
+
+    - name: Install and start Harbor
+      ansible.builtin.command:
+        cmd: ./install.sh
+        chdir: "{{ harbor_dir }}"
+      changed_when: true
+
+    - name: Check Harbor container status
+      ansible.builtin.command:
+        cmd: docker compose ps
+        chdir: "{{ harbor_dir }}"
+      register: harbor_status
+      changed_when: false
+
+    - name: Display Harbor status
+      ansible.builtin.debug:
+        var: harbor_status.stdout_lines

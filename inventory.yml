@@ -1,0 +1,14 @@
+---
+- name: Verify Ansible inventory and SSH connectivity
+  hosts: ansible_targets
+  gather_facts: true
+  tasks:
+    - name: Confirm connection and privilege escalation
+      ansible.builtin.ping:
+
+    - name: Show managed host information
+      ansible.builtin.debug:
+        msg:
+          - "Host: {{ inventory_hostname }}"
+          - "OS: {{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }}"
+          - "Kernel: {{ ansible_facts['kernel'] }}"
